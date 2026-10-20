@@ -29,8 +29,8 @@ Vec3D linAlpha;
 int firstReading = 1;
 
 // IMU Defines
-#define IMU_INT1_PIN 39 // INT1 
-#define SPI_CS   38     // CS
+#define IMU_INT1_PIN 39 // INT1 [TX]
+#define SPI_CS   38     // CS   [RX]
 #define SPI_MOSI 35     // SDA
 #define SPI_SCK  36     // SCL
 #define SPI_MISO 37     // ADR
