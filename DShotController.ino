@@ -1,46 +1,47 @@
-/*
-Charles Waldron and Samuel Smith
-
-This code can be found on Github (Teams)
-  Athena > !!Avionics > !Github
-Please make sure you have the must up to date version before working on it
-*/
-
+/**
+ * @file DShotController.ino
+ * @brief Main body for GNC Project Athena Tech demonstrator
+ *
+ * @author Charles Waldron
+ * @date 2026-11-09
+ */
 
 #include <Arduino.h> 
-//#include <DShotRMT.h>// ESC includes
-#include <SPI.h>// IMU includes
+//#include <DShotRMT.h> 
+#include <SPI.h>
 #include "SparkFun_BMI270_Arduino_Library.h" 
-#include "GNC_Types.h" 
+#include "Vec3D.h" 
+#include "PID.h"
+#include "driver/gpio.h"
 
 // Change motor pin to actual
 // This will be the ESC pin
 const gpio_num_t MOTOR_PIN = GPIO_NUM_14; //GPIO_NUM_13, GPIO_NUM_15
+const gpio_num_t STATE = GPIO_NUM_8; // [A5]
 
 const float alpha = .08;
 constexpr float DPS_TO_RAD = 0.01745329252f; // Custom define of DEG_TO_RAD so it stays as a float
+constexpr float GRAVITY = 9.80665f;
 //const float dt = 0.000625;
-Vec3D rawAlpha;
-Vec3D filteredAlpha;
-Vec3D omega, lomega;
-Vec3D r_COR = {.3, .2, .8}; // Radius of the IMU from the Center of Rotation
-Vec3D g_B;
-Vec3D linAlpha;
+GNC::Math::Vec3D rawAlpha;
+GNC::Math::Vec3D filteredAlpha;
+GNC::Math::Vec3D omega, lomega;
+GNC::Math::Vec3D r_COR = {.3, .2, .8}; // Radius of the IMU from the Center of Rotation
+GNC::Math::Vec3D g_B;
+GNC::Math::Vec3D linAlpha;
 int firstReading = 1;
+float resultX, resultY, resultZ;
 
 // IMU Defines
 #define IMU_INT1_PIN 39 // INT1 [TX]
-#define SPI_CS   38     // CS   [RX]
-#define SPI_MOSI 35     // SDA
-#define SPI_SCK  36     // SCL
+#define SPI_CS   38     // SCK  [RX] // enable
+#define SPI_MOSI 35     // SDA  
+#define SPI_SCK  36     // SCL 
 #define SPI_MISO 37     // ADR
 
 BMI270 imu;
 uint32_t spiClockSpeed = 2000000; //2 MHz 
 volatile bool dataReadyFlag = false;
-
-// Create a sensor data object
-//sensorData sD;
 
 // Create an instanice of the DShot Motor
 //DShotRMT motor(MOTOR_PIN, DSHOT300, false);
@@ -54,6 +55,17 @@ void IRAM_ATTR imuISR() {
   dataReadyFlag = true; 
 }
 
+GNC::Tools::PID controllerX{0.5f, 0.0f, 0.0f, -1.0f, 1.0f, -10.0f, 10.0f};
+GNC::Tools::PID controllerY{0.5f, 0.0f, 0.0f, -1.0f, 1.0f, -10.0f, 10.0f};
+GNC::Tools::PID controllerZ{0.5f, 0.0f, 0.0f, -1.0f, 1.0f, -10.0f, 10.0f};
+
+bool state = false;
+
+void toggle() {
+  state = !state;
+  gpio_set_level(STATE, state);
+}
+
 void setup() {
   // Set the Serial rate
   Serial.begin(115200);
@@ -64,6 +76,10 @@ void setup() {
   }
 
   pinMode(IMU_INT1_PIN, INPUT); // Attach the interrupt
+
+  // Set up State pin and set it low
+  pinMode(STATE, OUTPUT); 
+  gpio_set_level(STATE, 0);
 
   SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI, SPI_CS);
 
@@ -77,6 +93,7 @@ void setup() {
 
   imu.setAccelODR(BMI2_ACC_ODR_1600HZ);
   imu.setGyroODR(BMI2_GYR_ODR_1600HZ);
+  //TODO: Check that the 1 here is correct
   imu.setAccelPowerMode(1); // Setting a one here should set the IMU into high performance mode
   imu.setGyroPowerMode(1, 1); // Sets it with filter mode and noise mode both as performance mode
 
@@ -111,13 +128,20 @@ void loop() {
   // Update the motor as needed
   //motor.sendThrottlePercent(50);
 
+
   if (dataReadyFlag) {
     dataReadyFlag = false; // Reset flag immediately
 
     // Get the data from the SPI connection. Should take ~60-70 microseconds 
+    toggle(); //HIGH
     uint32_t startUs = micros();
+    toggle();//Low
     int8_t result = imu.getSensorData();
+    toggle();//High
     uint32_t readUs = micros() - startUs;
+
+    // Convert the uint32_t to a float seconds
+    float readToSec = static_cast<float>(readUs) * 1.0e-6f;
 
     // If the read failed, toss it out
     if (result != BMI2_OK) {
@@ -131,27 +155,32 @@ void loop() {
     // 3. Push omega to lomega
     // 4. Compute the numerical derivative
     // 5. Compute the new gravity in the body frame 
+    // 6. Update PID controller for each deflection 
+    // 7. Send updates to the servos
 
+    toggle(); //LOW
     // Filter the alphas
     if (firstReading) {
       firstReading = 0;
       rawAlpha = {0.0f, 0.0f, 0.0f};
-      filteredAlpha = {0.0f, 0.0f, 0.0f};
+      filteredAlpha = {rawAlpha.x, rawAlpha.y, rawAlpha.z};
     } else {
       omega.x = imu.data.gyroX * DPS_TO_RAD;
       omega.y = imu.data.gyroY * DPS_TO_RAD;
       omega.z = imu.data.gyroZ * DPS_TO_RAD;
       
       // Compute the numerical derivative
-      rawAlpha.x = (omega.x - lomega.x) / readUs;
-      rawAlpha.y = (omega.y - lomega.y) / readUs;
-      rawAlpha.z = (omega.z - lomega.z) / readUs;
+      rawAlpha.x = (omega.x - lomega.x) / readToSec;
+      rawAlpha.y = (omega.y - lomega.y) / readToSec;
+      rawAlpha.z = (omega.z - lomega.z) / readToSec;
 
       // Apply a LPF
       filteredAlpha.x = (alpha * rawAlpha.x) + ((1.0 - alpha) * filteredAlpha.x);
       filteredAlpha.y = (alpha * rawAlpha.y) + ((1.0 - alpha) * filteredAlpha.y);
       filteredAlpha.z = (alpha * rawAlpha.z) + ((1.0 - alpha) * filteredAlpha.z);
     }
+
+    toggle(); //HIGH
 
     // Push the current omegas down to lomega
     lomega = {omega.x, omega.y, omega.z};
@@ -160,6 +189,18 @@ void loop() {
     // Equation from the GNC Document
     linAlpha = {imu.data.accelX, imu.data.accelY, imu.data.accelZ}; // Convert the linear alphas to a Vec3D for calculations
     g_B = linAlpha - filteredAlpha.cross(r_COR) - lomega.cross(lomega.cross(r_COR));
+
+    toggle(); //LOW
+
+    // Use the PID to control the inputs back down to zero
+    resultX = controllerX.update(0.0f, g_B.x, readToSec);
+    resultY = controllerY.update(0.0f, g_B.y, readToSec);
+    resultZ = controllerZ.update(9.81f, g_B.z, readToSec);
+
+    // Useless lines to prevent unused variable warnings
+    GNC::Math::Vec3D resV = {resultX, resultY, resultZ};
+    GNC::Math::Vec3D doNothing = {0.0f, 0.0f, 0.0f};
+    resV + doNothing;
   }
 
   // Some operation to perfrom only once per set time interval
@@ -167,9 +208,11 @@ void loop() {
   if (millis() - lastReportTime >= 100) {
     lastReportTime = millis();
 
-    Serial.printf(
-  "Gyro rad/s: %.3f %.3f %.3f | Accel g: %.3f %.3f %.3f\n",
-  lomega.x, lomega.y, lomega.z,
-  linAlpha.x, linAlpha.y, linAlpha.z);
+    Serial.printf("Omega %8.3f %8.3f %8.3f,Alpha %11.6f %11.6f %11.6f,Accel %8.3f %8.3f %8.3f,PID %8.3f %8.3f %8.3f\n",
+    lomega.x, lomega.y, lomega.z,
+    filteredAlpha.x * GRAVITY, filteredAlpha.y * GRAVITY, filteredAlpha.z * GRAVITY,
+    linAlpha.x, linAlpha.y, linAlpha.z,
+    resultX, resultY, resultZ
+    );
   }
 }
