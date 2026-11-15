@@ -13,6 +13,8 @@
 #include "Vec3D.h" 
 #include "PID.h"
 #include "driver/gpio.h"
+#include "LPF.h"
+#include "NumericalDerivative.h"
 
 // Change motor pin to actual
 // This will be the ESC pin
@@ -58,6 +60,10 @@ void IRAM_ATTR imuISR() {
 GNC::Tools::PID controllerX{0.5f, 0.0f, 0.0f, -1.0f, 1.0f, -10.0f, 10.0f};
 GNC::Tools::PID controllerY{0.5f, 0.0f, 0.0f, -1.0f, 1.0f, -10.0f, 10.0f};
 GNC::Tools::PID controllerZ{0.5f, 0.0f, 0.0f, -1.0f, 1.0f, -10.0f, 10.0f};
+
+GNC::Tools::LPF lpfX{.15, 0};
+GNC::Tools::LPF lpfY{.15, 0};
+GNC::Tools::LPF lpfZ{.15, 0};
 
 bool state = false;
 
@@ -170,26 +176,19 @@ void loop() {
     }
 
     toggle(); //LOW
-    // Filter the alphas
-    if (firstReading) {
-      firstReading = 0;
-      rawAlpha = {0.0f, 0.0f, 0.0f};
-      filteredAlpha = {rawAlpha.x, rawAlpha.y, rawAlpha.z};
-    } else {
-      omega.x = imu.data.gyroX * DPS_TO_RAD;
-      omega.y = imu.data.gyroY * DPS_TO_RAD;
-      omega.z = imu.data.gyroZ * DPS_TO_RAD;
-      
-      // Compute the numerical derivative
-      rawAlpha.x = (omega.x - lomega.x) / readToSec;
-      rawAlpha.y = (omega.y - lomega.y) / readToSec;
-      rawAlpha.z = (omega.z - lomega.z) / readToSec;
 
-      // Apply a LPF
-      filteredAlpha.x = (alpha * rawAlpha.x) + ((1.0 - alpha) * filteredAlpha.x);
-      filteredAlpha.y = (alpha * rawAlpha.y) + ((1.0 - alpha) * filteredAlpha.y);
-      filteredAlpha.z = (alpha * rawAlpha.z) + ((1.0 - alpha) * filteredAlpha.z);
-    }
+    // Compute the filtered alpha values for linear acceleration
+    omega.x = imu.data.gyroX * DPS_TO_RAD;
+    omega.y = imu.data.gyroY * DPS_TO_RAD;
+    omega.z = imu.data.gyroZ * DPS_TO_RAD;
+
+    rawAlpha.x = GNC::Tools::numericalDerivative(omega.x, lomega.x, readToSec);
+    rawAlpha.y = GNC::Tools::numericalDerivative(omega.y, lomega.y, readToSec);
+    rawAlpha.z = GNC::Tools::numericalDerivative(omega.z, lomega.z, readToSec);
+
+    filteredAlpha.x = lpfX.updateFilter(rawAlpha.x);
+    filteredAlpha.y = lpfX.updateFilter(rawAlpha.y);
+    filteredAlpha.z = lpfX.updateFilter(rawAlpha.z);
 
     toggle(); //HIGH
 
