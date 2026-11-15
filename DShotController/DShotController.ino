@@ -61,11 +61,22 @@ GNC::Tools::PID controllerZ{0.5f, 0.0f, 0.0f, -1.0f, 1.0f, -10.0f, 10.0f};
 
 bool state = false;
 
+/**
+ * @brief Toggle a state pin to indicate the current execution step
+ * 
+ * @return void
+ */
 void toggle() {
   state = !state;
   gpio_set_level(STATE, state);
 }
 
+
+/**
+ * @brief Set up code for Serial, SPI, BMI270, DShot controller
+ * 
+ * @return void
+ */
 void setup() {
   // Set the Serial rate
   Serial.begin(115200);
@@ -84,16 +95,14 @@ void setup() {
   SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI, SPI_CS);
 
   // Write the flash file to to the IMU
-  while (imu.beginSPI(SPI_CS, spiClockSpeed, SPI) != BMI2_OK) { //
+  while (imu.beginSPI(SPI_CS, spiClockSpeed, SPI) != BMI2_OK) {
     Serial.println("Error: BMI270 not detected via SPI. Check wiring and CS pin!");
     delay(1000); 
   }
 
   // Set up the IMU and attach its interrupt pin
-
   imu.setAccelODR(BMI2_ACC_ODR_1600HZ);
   imu.setGyroODR(BMI2_GYR_ODR_1600HZ);
-  //TODO: Check that the 1 here is correct
   imu.setAccelPowerMode(1); // Setting a one here should set the IMU into high performance mode
   imu.setGyroPowerMode(1, 1); // Sets it with filter mode and noise mode both as performance mode
 
@@ -111,6 +120,12 @@ void setup() {
   imu.setInterruptPinConfig(intPinConfig);
   imu.mapInterruptToPin(BMI2_DRDY_INT, BMI2_INT1);
 
+  // Disable the 450 us delay and change it to a 2 us delay
+  // reduces L Sensor Data stage in processing
+  if (!(imu.disableAdvancedPowerSave())) {
+    Serial.println("Disable Power Save failed\n");
+  }
+
   // and attach it to the ESP
   attachInterrupt(digitalPinToInterrupt(IMU_INT1_PIN), imuISR, RISING);
 
@@ -120,6 +135,11 @@ void setup() {
 }
 
 
+/**
+ * @brief Code to run repeatedly 
+ * 
+ * @return void
+ */
 void loop() {
   // Tuning instructions:
   // If the motor is acting too violently, decrease alpha
@@ -148,15 +168,6 @@ void loop() {
       // Skip processing for the failed read
       return;
     }
-
-    // ---- DO NOT PUT SERIAL PRINTS OR DELAYS HERE ----
-    // 1. Poll sensor data
-    // 2. Apply the Low Pass Filter
-    // 3. Push omega to lomega
-    // 4. Compute the numerical derivative
-    // 5. Compute the new gravity in the body frame 
-    // 6. Update PID controller for each deflection 
-    // 7. Send updates to the servos
 
     toggle(); //LOW
     // Filter the alphas
