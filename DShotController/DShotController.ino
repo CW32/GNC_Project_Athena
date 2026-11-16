@@ -9,7 +9,7 @@
 #include <Arduino.h> 
 //#include <DShotRMT.h> 
 #include <SPI.h>
-#include "SparkFun_BMI270_Arduino_Library.h" 
+#include "../BMI270/src/SparkFun_BMI270_Arduino_Library.h" 
 #include "Vec3D.h" 
 #include "PID.h"
 #include "driver/gpio.h"
